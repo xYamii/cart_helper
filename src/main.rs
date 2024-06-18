@@ -1,4 +1,5 @@
 use std::io;
+use std::convert::TryFrom;
 use reqwest;
 use serde::{Deserialize, Deserializer}; 
 use serde_json::Value;
@@ -37,6 +38,22 @@ struct CachedItem {
     expires_at: DateTime<Utc>,
 }
 
+impl TryFrom<Value> for ApiResponse {
+    type Error = &'static str;
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match &value {
+            Value::Object(map) => {
+                if map.is_empty() {
+                    Err("API response is an empty object")
+                } else {
+                    serde_json::from_value(value).map_err(|_| "Nie znaleziono produktu")
+                }
+            },
+            _ => Err("Unexpected API response type"),
+        }
+    }
+}
+
 fn deserialize_ean<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
@@ -48,9 +65,8 @@ where
         _ => Err(serde::de::Error::custom("EAN nie jest liczbą")),
     }
 }
-
-impl Product {
-    fn from_api_response(api_response: ApiResponse) -> Self {
+impl From<ApiResponse> for Product {
+    fn from(api_response: ApiResponse) -> Self {
         let price: f32 = api_response.price.price.parse().unwrap_or(0.0);
         Product {
             ean: api_response.gtin.to_string(),
@@ -61,7 +77,7 @@ impl Product {
     }
 }
 
-fn fetch_product_info(ean: &str, cache: &mut HashMap<String, CachedItem>) -> Result<Product, reqwest::Error> {
+fn fetch_product_info(ean: &str, cache: &mut HashMap<String, CachedItem>) -> Result<Product, Box<dyn std::error::Error>> {
     let now = Utc::now();
     if let Some(cached_item) = cache.get(ean) {
         if cached_item.expires_at > now {
@@ -69,16 +85,24 @@ fn fetch_product_info(ean: &str, cache: &mut HashMap<String, CachedItem>) -> Res
             return Ok(cached_item.product.clone());
         }
     }
+
     let url = format!("https://products.dm.de/product/DE/products/detail/gtin/{}", ean);
-    let resp: ApiResponse = reqwest::blocking::get(&url)?.json()?;
-    let product: Product = Product::from_api_response(resp);
+    let resp: Value = reqwest::blocking::get(&url)?.json()?;
 
-    cache.insert(ean.to_string(), CachedItem {
-        product: product.clone(),
-        expires_at: now + Duration::minutes(30),
-    });
-
-    Ok(product)
+    let api_response: Result<ApiResponse, _> = ApiResponse::try_from(resp);
+    match api_response {
+        Ok(api_response) => {
+            let product: Product = Product::from(api_response);
+            cache.insert(ean.to_string(), CachedItem {
+                product: product.clone(),
+                expires_at: now + Duration::minutes(30),
+            });
+            Ok(product)
+        },
+        Err(e) => {
+            Err(Box::new(io::Error::new(io::ErrorKind::Other, e)))
+        }
+    }
 }
 
 fn main() {
@@ -93,19 +117,23 @@ fn main() {
         if ean.to_lowercase().trim() == "end" {
             break;
         }
-        let mut product: Product = fetch_product_info(&ean.trim().to_lowercase(), &mut cache).unwrap();
-        println!("Znaleziono produkt {}", product.name);
-        println!("Podaj ilość produktu:");
-        io::stdin().read_line(&mut quantity_input).unwrap();
-        let quantity: i32 = quantity_input.trim().parse().unwrap();
-        product.quantity = quantity;
-        cart.push(product);
+        match fetch_product_info(&ean.trim().to_lowercase(), &mut cache) {
+            Ok(mut product) => {
+                println!("Znaleziono produkt {}", product.name);
+                println!("Podaj ilość produktu:");
+                io::stdin().read_line(&mut quantity_input).unwrap();
+                let quantity: i32 = quantity_input.trim().parse().unwrap();
+                product.quantity = quantity;
+                cart.push(product);
+            }
+            Err(e) => println!("Błąd przy pobieraniu informacji o produkcie: {}", e),
+        }
     }
 
     let total_price: f32 = cart.iter().map(|item| item.price * item.quantity as f32).sum();
     println!("Twoje produkty:");
     for item in &cart {
-        println!(" - {} sztuk: {}   - €{:.2} za sztukę", item.name, item.quantity, item.price);
+        println!(" - {} sztuk: {}  |  €{:.2} za sztukę", item.name, item.quantity, item.price);
     }
     println!("\nKurs euro: {}", exchange_rate);
     println!("\n\nSuma: €{:.2}, suma: {:.2}PLN", total_price, total_price * exchange_rate);
