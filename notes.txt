@@ -1,7 +1,0 @@
-curl 'https://products.dm.de/product/DE/products/detail/gtin/30144224' \
-  -H 'sec-ch-ua: "Not/A)Brand";v="8", "Chromium";v="126", "Brave";v="126"' \
-  -H 'content-type: application/json' \
-  -H 'Referer: https://www.dm.de/' \
-  -H 'sec-ch-ua-platform: "Windows"' \
-  -H 'sec-ch-ua-mobile: ?0' \
-  -H 'x-dm-version: 2024.617.36003'
