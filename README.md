@@ -2,6 +2,6 @@
 
 ## todo
 
-- [] add ui
-- [] add euro exchange from api or smth
-- [] clean up main file, split into smaller modules
+- [ ] add ui
+- [ ] add euro exchange from api or smth
+- [ ] clean up main file, split into smaller modules
