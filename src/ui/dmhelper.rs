@@ -1,9 +1,14 @@
 use chrono::{DateTime, Duration, Utc};
-use egui::{CentralPanel, TopBottomPanel};
-use reqwest;
+use egui::{vec2, CentralPanel, ColorImage, TopBottomPanel};
+use image::{io::Reader, DynamicImage};
+use reqwest::Url;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
-use std::{collections::HashMap, io};
+use std::{
+    collections::HashMap,
+    error::Error,
+    io::{self, Cursor},
+};
 
 #[derive(Deserialize, Debug)]
 struct ApiResponse {
@@ -36,7 +41,7 @@ struct Product {
     name: String,
     price: f32,
     quantity: i32,
-    image: String,
+    image: Option<ColorImage>,
 }
 
 impl TryFrom<Value> for ApiResponse {
@@ -76,7 +81,7 @@ where
             return Ok(map
                 .iter()
                 .map(|item| Image {
-                    src: item["src"].to_string(),
+                    src: item["src"].to_string().replace("\"", ""),
                 })
                 .collect());
         }
@@ -84,15 +89,52 @@ where
     }
 }
 
+fn download_image(input_url: &str) -> Result<DynamicImage, Box<dyn Error>> {
+    let url = match Url::parse(input_url) {
+        Ok(url) => url,
+        Err(e) => {
+            return Err(Box::new(e));
+        }
+    };
+    let response = match reqwest::blocking::get(url) {
+        Ok(response) => response,
+        Err(e) => {
+            return Err(Box::new(e));
+        }
+    };
+    if !response.status().is_success() {
+        return Err(format!("Failed to download image: {}", response.status()).into());
+    }
+
+    let bytes = response.bytes()?;
+    let cursor = Cursor::new(bytes);
+    let image = Reader::new(cursor).with_guessed_format()?.decode()?;
+
+    Ok(image)
+}
+
+fn image_to_color_image(image: DynamicImage) -> ColorImage {
+    let rgba = image.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    ColorImage::from_rgba_unmultiplied(size, rgba.as_flat_samples().as_slice())
+}
+
 impl From<ApiResponse> for Product {
     fn from(api_response: ApiResponse) -> Self {
         let price: f32 = api_response.price.price.parse().unwrap_or(0.0);
+        let image_url = api_response.images[0].src.to_string();
+        let url = image_url.as_str();
+        let image = match download_image(url) {
+            Ok(img) => Some(image_to_color_image(img)),
+            Err(_e) => None,
+        };
+
         Product {
             ean: api_response.gtin.to_string(),
             name: api_response.title.headline,
             price,
             quantity: 0,
-            image: api_response.images[0].src.to_string(),
+            image,
         }
     }
 }
@@ -103,6 +145,7 @@ struct CachedItem {
 }
 
 pub struct DMHelper {
+    euro_exchange_rate: f32,
     cached_items: HashMap<String, CachedItem>,
     ean: String,
     cart: Vec<Product>,
@@ -112,6 +155,7 @@ pub struct DMHelper {
 impl DMHelper {
     pub fn new() -> Self {
         return Self {
+            euro_exchange_rate: 0.0,
             cached_items: HashMap::new(),
             ean: String::new(),
             cart: Vec::new(),
@@ -126,7 +170,6 @@ impl DMHelper {
         let now = Utc::now();
         if let Some(cached_item) = cache.get(ean) {
             if cached_item.expires_at > now {
-                println!("Pobieram z cache");
                 return Ok(cached_item.product.clone());
             }
         }
@@ -156,13 +199,16 @@ impl DMHelper {
 
 impl eframe::App for DMHelper {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let exchange_rate: f32 = 4.34;
         TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.set_height(25.0);
                 ui.horizontal(|ui| {
                     ui.label("DMHelper");
                 });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Exchange Rate:");
+                ui.add(egui::DragValue::new(&mut self.euro_exchange_rate).speed(0.01));
             });
         });
         CentralPanel::default().show(ctx, |ui| {
@@ -183,8 +229,20 @@ impl eframe::App for DMHelper {
                     if let Some(product) = &mut self.product {
                         ui.label(format!("Znaleziono produkt {}", product.name));
                         ui.label(product.ean.clone());
-                        //doesnt work :(
-                        ui.add(egui::Image::from_uri(product.image.clone()));
+
+                        if let Some(ref image) = product.image {
+                            let texture = ctx.load_texture(
+                                "product_image",
+                                image.clone(),
+                                egui::TextureOptions::default(),
+                            );
+                            ui.add(
+                                egui::Image::from_texture(&texture).max_size(vec2(100.0, 200.0)),
+                            );
+                        } else {
+                            ui.label("Failed to load image");
+                        }
+
                         ui.horizontal(|ui| {
                             ui.label("Ilość:");
                             ui.add(egui::widgets::DragValue::new(&mut product.quantity).speed(1.0));
@@ -193,7 +251,7 @@ impl eframe::App for DMHelper {
                             ui.label(format!("Cena w EURO: {:.2}", product.price));
                             ui.label(format!(
                                 "Cena w PLN: {:.2}",
-                                product.price * exchange_rate * product.quantity as f32
+                                product.price * self.euro_exchange_rate * product.quantity as f32
                             ));
                         });
                         if ui.button("Dodaj do koszyka").clicked() {
@@ -236,11 +294,11 @@ impl eframe::App for DMHelper {
                                 ui.separator();
                             }
                         });
-                    ui.label(format!("Kurs euro: {}", exchange_rate));
+                    ui.label(format!("Kurs euro: {}", self.euro_exchange_rate));
                     ui.label(format!(
                         "\n\nSuma: €{:.2}, suma: {:.2}PLN",
                         total_price,
-                        total_price * exchange_rate
+                        total_price * self.euro_exchange_rate
                     ))
                 });
             })

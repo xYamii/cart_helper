@@ -14,4 +14,5 @@ eframe = { version = "0.28.0", features = [
   "default",
   "__screenshot", 
 ] }
-egui_extras = { version = "0.28.0", features = ["default", "all_loaders"] }
+egui_extras = { version = "0.28.0", features = ["all_loaders"] }
+image = { version = "*", features = ["jpeg", "png"] }
