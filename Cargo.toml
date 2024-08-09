@@ -9,3 +9,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = "0.4"
 structopt = "0.3"
+egui = "0.28.0"
+eframe = { version = "0.28.0", features = [
+  "default",
+  "__screenshot", 
+] }
+egui_extras = { version = "0.28.0", features = ["all_loaders"] }
+image = { version = "*", features = ["jpeg", "png"] }
